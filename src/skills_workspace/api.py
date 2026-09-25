@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .errors import DomainError, ValidationError
+from .experiments import ExperimentService
 from .service import DomainService
 from .storage import Database
 
@@ -18,8 +19,11 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
     """把一个 HTTP 语义请求分派到领域服务。"""
 
     headers = headers or {}
-    body = body or {}
+    body = dict(body or {})
+    # 请求体中的 actor_id 表示操作者，改由 X-Actor-Id 头提供，避免与关键字参数重复。
+    body.pop("actor_id", None)
     parsed = urlparse(path)
+    segments = [segment for segment in parsed.path.split("/") if segment]
     actor_id = headers.get("X-Actor-Id", "")
     try:
         if method == "GET" and parsed.path == "/health":
@@ -48,6 +52,54 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+
+        # ---- 软件测试实验平台路由，需要 ExperimentService ----
+        if not isinstance(service, ExperimentService):
+            return 404, {"error": "route_not_found", "message": "接口不存在"}
+        if method == "POST" and parsed.path == "/builds":
+            receipt = service.register_build(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/case-packages":
+            receipt = service.register_case_package(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/environments":
+            receipt = service.register_environment(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/runs":
+            receipt = service.create_run(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if len(segments) == 3 and segments[0] == "runs" and segments[2] == "shards" and method == "POST":
+            result = service.upload_shard(
+                actor_id=actor_id, run_id=segments[1],
+                shard_index=body["shard_index"], shard=body["shard"],
+            )
+            return 200, result
+        if len(segments) == 2 and segments[0] == "runs" and method == "GET":
+            return 200, service.get_run(segments[1])
+        if len(segments) == 3 and segments[0] == "runs" and segments[2] == "replay" and method == "GET":
+            return 200, service.replay_run(segments[1])
+        if method == "POST" and parsed.path == "/reviews":
+            receipt = service.open_review(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if len(segments) == 2 and segments[0] == "reviews" and method == "GET":
+            return 200, service.get_review(segments[1])
+        if len(segments) == 3 and segments[0] == "reviews" and segments[2] == "supplement" and method == "POST":
+            receipt = service.submit_supplement(actor_id=actor_id, review_id=segments[1], **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if len(segments) == 3 and segments[0] == "reviews" and segments[2] == "decision" and method == "POST":
+            receipt = service.decide_review(actor_id=actor_id, review_id=segments[1], **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and parsed.path == "/statistics":
+            query = parse_qs(parsed.query)
+            include = query.get("include_superseded", ["false"])[0].lower() == "true"
+            return 200, service.statistics(include_superseded=include)
+        if method == "GET" and parsed.path == "/signatures":
+            query = parse_qs(parsed.query)
+            signature = query.get("signature", [""])[0]
+            return 200, service.search_signature(signature)
+        if method == "POST" and parsed.path == "/maintenance/resume":
+            return 200, {"frozen_runs": service.resume_pending(),
+                         "expired_reviews": service.expire_due_reviews()}
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
@@ -93,13 +145,17 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     """启动本地 HTTP 服务。"""
 
-    parser = argparse.ArgumentParser(description="启动技能赛训协作基础服务")
+    parser = argparse.ArgumentParser(description="启动软件测试实验运行与缺陷复现服务")
     parser.add_argument("--database", default="service.sqlite3")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    service = ExperimentService(database)
+    # 中断重启后：继续未完成的分片合并，并过期已截止的复核。
+    service.resume_pending()
+    service.expire_due_reviews()
+    Handler.service = service
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()

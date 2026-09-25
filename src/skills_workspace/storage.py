@@ -63,6 +63,83 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_hash TEXT NOT NULL UNIQUE,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS builds (
+    build_id TEXT PRIMARY KEY,
+    source_ref TEXT NOT NULL,
+    build_digest TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    registered_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(build_digest)
+);
+CREATE TABLE IF NOT EXISTS case_packages (
+    package_id TEXT PRIMARY KEY,
+    package_digest TEXT NOT NULL,
+    case_count INTEGER NOT NULL CHECK(case_count >= 0),
+    case_ids_json TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    registered_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(package_digest)
+);
+CREATE TABLE IF NOT EXISTS environments (
+    environment_id TEXT PRIMARY KEY,
+    environment_digest TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    registered_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(environment_digest)
+);
+CREATE TABLE IF NOT EXISTS experiments (
+    run_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    build_id TEXT NOT NULL REFERENCES builds(build_id),
+    package_id TEXT NOT NULL REFERENCES case_packages(package_id),
+    environment_id TEXT NOT NULL REFERENCES environments(environment_id),
+    expected_shards INTEGER NOT NULL CHECK(expected_shards >= 1),
+    status TEXT NOT NULL CHECK(status IN ('collecting','frozen','superseded')),
+    frozen_inputs_digest TEXT,
+    verdict TEXT,
+    reason_code TEXT,
+    decision_json TEXT,
+    frozen_at TEXT,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    superseded_by_run_id TEXT,
+    review_id TEXT
+);
+CREATE TABLE IF NOT EXISTS run_shards (
+    run_id TEXT NOT NULL REFERENCES experiments(run_id),
+    shard_index INTEGER NOT NULL CHECK(shard_index >= 0),
+    content_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    uploaded_by TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL,
+    PRIMARY KEY(run_id, shard_index)
+);
+CREATE TABLE IF NOT EXISTS reviews (
+    review_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES experiments(run_id),
+    opened_by TEXT NOT NULL REFERENCES actors(actor_id),
+    opened_at TEXT NOT NULL,
+    deadline TEXT NOT NULL,
+    note TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('open','accepted','rerun','expired','cancelled')),
+    decided_by TEXT,
+    decided_at TEXT,
+    decision_note TEXT,
+    rerun_run_id TEXT,
+    UNIQUE(run_id)
+);
+CREATE TABLE IF NOT EXISTS review_supplements (
+    review_id TEXT NOT NULL REFERENCES reviews(review_id),
+    submitted_by TEXT NOT NULL REFERENCES actors(actor_id),
+    content TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    PRIMARY KEY(review_id, submitted_by)
+);
+CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status);
+CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status);
 """
 
 
