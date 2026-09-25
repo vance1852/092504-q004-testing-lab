@@ -15,8 +15,8 @@ from .models import Actor, DomainRecord, Site, WriteReceipt
 from .storage import Database
 
 
-IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{1,63}$")
-ROLES = frozenset({"admin", "operator", "reviewer", "auditor"})
+IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
+ROLES = frozenset({"admin", "operator", "reviewer", "auditor", "teacher", "student"})
 
 
 class DomainService:
